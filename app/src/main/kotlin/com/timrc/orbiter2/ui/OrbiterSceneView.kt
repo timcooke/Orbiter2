@@ -54,17 +54,11 @@ import io.github.sceneview.rememberNode
 import io.github.sceneview.texture.ImageTexture
 
 // ── Orbital ring constants ────────────────────────────────────────────────────
-/** Sample points around the ellipse (1° resolution). */
-private const val RING_POINTS = 360
+/** Number of sphere dots placed evenly around the orbital ellipse. */
+private const val RING_DOT_COUNT = 90
 
-/**
- * Pre-allocated vertex count for the ring TRIANGLE_STRIP.
- * RING_POINTS + 1 positions (last = first, closes the loop) × 2 edges = RING_VERTS.
- */
-private const val RING_VERTS = (RING_POINTS + 1) * 2
-
-/** Half-width of the orbital ring ribbon, in Earth radii (~50 km). */
-private const val RING_HALF_WIDTH = 0.008f
+/** Radius of each ring dot sphere, in Earth radii (~80 km). */
+private const val RING_DOT_RADIUS = 0.0125f
 
 // ── Orbital trail constants ───────────────────────────────────────────────────
 /** Maximum positions in the trail ring-buffer (~1 full LEO orbit at default 10 s/step). */
@@ -81,13 +75,11 @@ private const val TRAIL_FADE = 135
 private const val TRAIL_HALF_WIDTH = 0.015f
 
 /**
- * Sample the Keplerian orbital ellipse into a closed TRIANGLE_STRIP ribbon.
+ * Compute [RING_DOT_COUNT] evenly-spaced ECI positions along the Keplerian ellipse,
+ * mapped to scene space (sceneX=eciX, sceneY=eciZ, sceneZ=-eciY).
  *
- * The ribbon is offset ±[RING_HALF_WIDTH] perpendicular to the orbital plane
- * (widthDir = h_hat), making it visible from any viewing angle.  The loop is
- * closed by repeating ν = 0° at the end, giving exactly [RING_VERTS] vertices.
- *
- * Coordinate convention: scene Y = ECI north pole (simZ), scene Z = −simY.
+ * Each position is the centre of a small SphereNode, so the ring is visible from
+ * any camera angle — no ribbon/normal issues.
  *
  * @param a       Semi-major axis, Earth radii
  * @param e       Eccentricity
@@ -95,43 +87,31 @@ private const val TRAIL_HALF_WIDTH = 0.015f
  * @param raanRad RAAN (Ω), radians
  * @param aopRad  Argument of periapsis (ω), radians
  */
-private fun buildOrbitalRingVerts(
+private fun computeOrbitalRingPositions(
     a: Float, e: Float,
     iRad: Float, raanRad: Float, aopRad: Float
-): List<Geometry.Vertex> {
-    if (a < 0.1f) return List(RING_VERTS) {
-        Geometry.Vertex(position = Float3(0f, 2f, 0f), normal = Float3(0f, 1f, 0f), color = Float4(0f, 0f, 0f, 0f))
-    }
+): List<Float3> {
+    if (a < 0.1f) return List(RING_DOT_COUNT) { Float3(0f, 2f, 0f) }
 
-    // Orbital-plane normal in ECI: h_hat = [sin(i)sin(Ω), -sin(i)cos(Ω), cos(i)]
+    // Perifocal → ECI rotation matrix columns P̂ and Q̂
     val si = sin(iRad).toFloat(); val ci = cos(iRad).toFloat()
     val sO = sin(raanRad).toFloat(); val cO = cos(raanRad).toFloat()
     val sw = sin(aopRad).toFloat();  val cw = cos(aopRad).toFloat()
 
-    // h_hat in ECI then mapped to scene (sceneX=eciX, sceneY=eciZ, sceneZ=-eciY)
-    val hScene = normalize(Float3(si * sO, ci, si * cO))
-
-    // Perifocal → ECI rotation matrix columns P̂ and Q̂
     val Px =  cO * cw - sO * sw * ci;   val Qx = -cO * sw - sO * cw * ci
     val Py =  sO * cw + cO * sw * ci;   val Qy = -sO * sw + cO * cw * ci
     val Pz =  sw * si;                   val Qz =  cw * si
 
     val twoPi = (2.0 * PI).toFloat()
-    val cyan = Float4(0f, 0.9f, 1f, 1f)
 
-    return List(RING_VERTS) { i ->
-        val step = i / 2
-        val side = if (i % 2 == 0) 1f else -1f
-        val nu   = (step.toFloat() / RING_POINTS) * twoPi
-        // Orbital radius at this true anomaly
-        val r    = a * (1f - e * e) / (1f + e * cos(nu))
-        val px   = r * cos(nu);  val py = r * sin(nu)
-        // Perifocal → ECI → scene
+    return List(RING_DOT_COUNT) { i ->
+        val nu = (i.toFloat() / RING_DOT_COUNT) * twoPi
+        val r  = a * (1f - e * e) / (1f + e * cos(nu))
+        val px = r * cos(nu); val py = r * sin(nu)
         val eciX = px * Px + py * Qx
         val eciY = px * Py + py * Qy
         val eciZ = px * Pz + py * Qz
-        val pos  = Float3(eciX, eciZ, -eciY) + hScene * (side * RING_HALF_WIDTH)
-        Geometry.Vertex(position = pos, normal = hScene, color = cyan)
+        Float3(eciX, eciZ, -eciY)   // ECI → scene axis swap
     }
 }
 
@@ -351,32 +331,28 @@ fun OrbiterSceneView(
     }
 
     // ── Orbital ring (Step 9 preview) ─────────────────────────────────────────
-    // One full Keplerian ellipse, redrawn at every ascending-node crossing.
-    // Rendered as a thin TRIANGLE_STRIP ribbon offset ±RING_HALF_WIDTH along the
-    // orbital-plane normal so it is visible from any camera angle.
-    // The ring starts invisible (all vertices collapsed to a point just above the
-    // north pole) and is replaced with the correct geometry on the first frame.
-    val ringNode = rememberNode {
-        val blankVerts = List(RING_VERTS) { i ->
-            Geometry.Vertex(
-                position = Float3(0f, 2f + i * 0.0001f, 0f),
-                normal   = Float3(0f, 1f, 0f),
-                color    = Float4(0f, 0f, 0f, 0f)  // transparent until first draw
-            )
-        }
-        GeometryNode(
-            engine = engine,
-            geometry = Geometry.Builder(RenderableManager.PrimitiveType.TRIANGLE_STRIP)
-                .vertices(blankVerts)
-                .indices(List(RING_VERTS) { it })
-                .build(engine),
-            materialInstance = materialLoader.createColorInstance(
-                color      = Color(0f, 0.9f, 1f, 1f),  // cyan
-                metallic   = 0f,
-                roughness  = 1f,
-                reflectance = 0f
-            )
+    // One full Keplerian ellipse as RING_DOT_COUNT small SphereNodes.
+    // Spheres are visible from every camera angle (no face-on ribbon issue).
+    // Positions are recomputed on every ascending-node crossing.
+    val ringDotMaterial = remember(materialLoader) {
+        materialLoader.createColorInstance(
+            color       = Color(0f, 0.9f, 1f, 1f),  // cyan
+            metallic    = 0f,
+            roughness   = 1f,
+            reflectance = 0f
         )
+    }
+    val ringDotNodes = remember(engine, ringDotMaterial) {
+        List(RING_DOT_COUNT) { i ->
+            SphereNode(
+                engine           = engine,
+                radius           = RING_DOT_RADIUS,
+                center           = Float3(0f, 0f, 0f),
+                stacks           = 6,
+                slices           = 6,
+                materialInstance = ringDotMaterial
+            ).also { it.worldPosition = Float3(0f, 2f + i * 0.0001f, 0f) }
+        }
     }
 
     // Overlay the 3D scene with a small "ECI Frame" label at bottom-left.
@@ -390,8 +366,8 @@ fun OrbiterSceneView(
         // trailNode excluded — orbital trail is a feature in work (see IMPROVEMENTS.md).
         // The ribbon geometry, ring-buffer, and frame-counter code is retained below
         // and can be re-enabled by adding trailNode back to this list.
-        childNodes  = remember(earthNode, satNode, eciXNode, eciYNode, eciZNode, ringNode) {
-            listOf(earthNode, satNode, eciXNode, eciYNode, eciZNode, ringNode)
+        childNodes  = remember(earthNode, satNode, eciXNode, eciYNode, eciZNode, ringDotNodes) {
+            listOf(earthNode, satNode, eciXNode, eciYNode, eciZNode) + ringDotNodes
         },
         cameraManipulator = rememberCameraManipulator(
             Float3(0f, 1.0f, 4.5f),
@@ -423,14 +399,16 @@ fun OrbiterSceneView(
             prevSceneY[0] = scenePos.y
             if (atAscendingNode) {
                 ringReady[0] = true
-                val verts = buildOrbitalRingVerts(
+                val positions = computeOrbitalRingPositions(
                     a       = s.semiMajorAxisEr.toFloat(),
                     e       = s.eccentricity.toFloat(),
                     iRad    = (s.inclinationDeg * PI / 180.0).toFloat(),
                     raanRad = (s.raanDeg        * PI / 180.0).toFloat(),
                     aopRad  = (s.aopDeg         * PI / 180.0).toFloat()
                 )
-                ringNode.updateGeometry(verts, listOf(List(RING_VERTS) { it }))
+                ringDotNodes.forEachIndexed { i, node ->
+                    node.worldPosition = positions[i]
+                }
             }
 
             // ── Trail ring-buffer (feature in work — currently disabled) ─────
