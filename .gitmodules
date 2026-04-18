@@ -1,0 +1,9 @@
+[submodule "legacy_source/vse"]
+	path = legacy_source/vse
+	url = https://github.com/motoq/vse
+[submodule "legacy_source/orbiter"]
+	path = legacy_source/orbiter
+	url = https://github.com/motoq/orbiter
+[submodule "legacy_source/runvse"]
+	path = legacy_source/runvse
+	url = https://github.com/motoq/runvse

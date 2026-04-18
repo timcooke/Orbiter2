@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.Orbiter" parent="android:Theme.Material.NoActionBar.Fullscreen" />
+</resources>
