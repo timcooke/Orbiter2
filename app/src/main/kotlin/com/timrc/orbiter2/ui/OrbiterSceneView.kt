@@ -1,8 +1,15 @@
 package com.timrc.orbiter2.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -11,8 +18,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.android.filament.IndirectLight
@@ -484,14 +493,73 @@ fun OrbiterSceneView(
             } // end if (false) trail disabled
         } // end onFrame
     ) // end Scene
-    // ── "ECI Frame" annotation ────────────────────────────────────────────
+    // ── HUD overlays ──────────────────────────────────────────────────────────
+    // Top-left: frame indicator with green LED
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopStart)
+            .padding(8.dp, 8.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF5CD07B))
+            )
+            Text(
+                "ECI FRAME",
+                color = Color(0xFFC8D4EA),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                letterSpacing = 0.14.sp
+            )
+        }
+    }
+    // Top-right: lat/lon
     Text(
-        text     = "ECI Frame",
-        color    = Color.White.copy(alpha = 0.65f),
-        fontSize = 9.sp,
+        text = "LAT ${"%.2f".format(state.latDeg)}\u00B0  \u00B7  LON ${"%.2f".format(state.lonDeg)}\u00B0",
+        color = Color(0xFFC8D4EA),
+        fontSize = 10.sp,
+        fontFamily = FontFamily.Monospace,
+        letterSpacing = 0.14.sp,
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(8.dp, 8.dp)
+    )
+    // Bottom-left: axis legend
+    Row(
         modifier = Modifier
             .align(Alignment.BottomStart)
-            .padding(start = 8.dp, bottom = 8.dp)
+            .padding(8.dp, 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AxisLegendItem(Color(0xFF4FA3FF), "X-ECI")
+        AxisLegendItem(Color(0xFFFF8A3A), "Y-ECI")
+        AxisLegendItem(Color(0xFFB7E24F), "Z-ECI")
+    }
+    // Bottom-right: ground track
+    Text(
+        text = "GROUND TRACK  \u00B7  T+${(state.time / 60.0).toInt()}m",
+        color = Color(0xFF6E7FA0),
+        fontSize = 10.sp,
+        fontFamily = FontFamily.Monospace,
+        letterSpacing = 0.14.sp,
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(8.dp, 8.dp)
     )
     } // end Box
 } // end OrbiterSceneView
+
+@Composable
+private fun AxisLegendItem(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Box(modifier = Modifier.width(14.dp).height(2.dp).background(color))
+        Text(label, color = Color(0xFFC8D4EA), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+    }
+}

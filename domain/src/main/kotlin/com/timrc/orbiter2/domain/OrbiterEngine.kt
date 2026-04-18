@@ -3,6 +3,7 @@ package com.timrc.orbiter2.domain
 import com.timrc.orbiter2.domain.enums.Basis3D
 import com.timrc.orbiter2.domain.enums.FTxyz
 import com.timrc.orbiter2.domain.enums.KepEuler
+import com.timrc.orbiter2.domain.enums.XdX6DQ
 import com.timrc.orbiter2.domain.envrm.Gravity
 import com.timrc.orbiter2.domain.envrm.ICentralBody
 import com.timrc.orbiter2.domain.math.Quaternion
@@ -21,6 +22,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+
+enum class HoldMode {
+    FREE, PROGRADE, RETROGRADE, NORMAL, ANTINORMAL, RADIAL, ANTIRADIAL, TARGET, SUN
+}
 
 /** All-double snapshot for zero-allocation Compose equality checks. */
 data class OrbiterState(
@@ -46,6 +51,8 @@ data class OrbiterState(
     val raanDeg: Double = 0.0,
     val aopDeg: Double = 0.0,
     val trueAnomalyDeg: Double = 0.0,
+    val latDeg: Double = 0.0,    // geocentric latitude, degrees [-90, +90]
+    val lonDeg: Double = 0.0,    // geographic longitude with Earth rotation, degrees [-180, +180]
     // RPY-frame Euler angles (bank/elevation/heading)
     val bankDeg: Double = 0.0,
     val elevationDeg: Double = 0.0,
@@ -75,6 +82,8 @@ class OrbiterEngine(
     private val stepHz: Long = 30L
 ) {
     private val sim = OrbiterSys()
+
+    @Volatile private var holdMode: HoldMode = HoldMode.FREE
 
     private val _state = MutableStateFlow(OrbiterState())
     val state: StateFlow<OrbiterState> = _state.asStateFlow()
@@ -108,7 +117,43 @@ class OrbiterEngine(
 
     fun setForce(axis: FTxyz, value: Double) { sim.setU(axis, value) }
 
-    fun clearControls() { FTxyz.entries.forEach { sim.setU(it, 0.0) }  }
+    fun clearControls() { FTxyz.entries.forEach { sim.setU(it, 0.0) } }
+
+    fun setAttitudeHold(mode: HoldMode) { holdMode = mode }
+
+    /** Apply an instantaneous velocity impulse of [dvMps] m/s in the current prograde direction. */
+    fun applyBurn(dvMps: Double) {
+        val vx = sim.getX(XdX6DQ.DX); val vy = sim.getX(XdX6DQ.DY); val vz = sim.getX(XdX6DQ.DZ)
+        val vMag = Math.sqrt(vx*vx + vy*vy + vz*vz)
+        if (vMag < 1e-12) return
+        val dvErMin = dvMps / (6_378_137.0 / 60.0)   // m/s → ER/min
+        val scale = dvErMin / vMag
+        sim.setX(XdX6DQ.DX, vx + vx * scale)
+        sim.setX(XdX6DQ.DY, vy + vy * scale)
+        sim.setX(XdX6DQ.DZ, vz + vz * scale)
+    }
+
+    /** Apply a small RCS translational impulse. [dx],[dy],[dz] are ±1 body-frame directions; [magMps] in m/s. */
+    fun jogRCS(dx: Int, dy: Int, dz: Int, magMps: Double) {
+        if (dx == 0 && dy == 0 && dz == 0) return
+        val dMag = Math.sqrt((dx*dx + dy*dy + dz*dz).toDouble())
+        val bx = dx / dMag; val by = dy / dMag; val bz = dz / dMag
+        // Rotate body impulse direction to ECI using q_conj (b2i = inverse of passive i2b)
+        val q0c =  sim.getX(XdX6DQ.Q0)
+        val qic = -sim.getX(XdX6DQ.QI)
+        val qjc = -sim.getX(XdX6DQ.QJ)
+        val qkc = -sim.getX(XdX6DQ.QK)
+        // Rodrigues: v_eci = v_body + 2*q0c * cross(q_vec_c, v_body) + 2 * cross(q_vec_c, cross(q_vec_c, v_body))
+        val cx = qjc*bz - qkc*by; val cy = qkc*bx - qic*bz; val cz = qic*by - qjc*bx
+        val c2x = qjc*cz - qkc*cy; val c2y = qkc*cx - qic*cz; val c2z = qic*cy - qjc*cx
+        val eciX = bx + 2*q0c*cx + 2*c2x
+        val eciY = by + 2*q0c*cy + 2*c2y
+        val eciZ = bz + 2*q0c*cz + 2*c2z
+        val magErMin = magMps / (6_378_137.0 / 60.0)
+        sim.setX(XdX6DQ.DX, sim.getX(XdX6DQ.DX) + eciX * magErMin)
+        sim.setX(XdX6DQ.DY, sim.getX(XdX6DQ.DY) + eciY * magErMin)
+        sim.setX(XdX6DQ.DZ, sim.getX(XdX6DQ.DZ) + eciZ * magErMin)
+    }
 
     // ── private ──────────────────────────────────────────────────────────
 
@@ -129,6 +174,74 @@ class OrbiterEngine(
         sim.getAttitude(t, qBuffer)
         sim.getY(outputBuffer)
 
+        // ── Lat / lon ────────────────────────────────────────────────────────────
+        val px = posBuffer.get(Basis3D.I); val py = posBuffer.get(Basis3D.J); val pz = posBuffer.get(Basis3D.K)
+        val rMag = Math.sqrt(px*px + py*py + pz*pz)
+        val latRad = if (rMag > 1e-12) Math.asin(pz.coerceIn(-rMag, rMag) / rMag) else 0.0
+        val lonEciRad = Math.atan2(py, px)
+        val thetaGAST = 4.37527e-3 * t       // Earth rotation: ~0.004375 rad/min × time (min)
+        var lonEcefRad = lonEciRad - thetaGAST
+        while (lonEcefRad >  Math.PI) lonEcefRad -= 2.0 * Math.PI
+        while (lonEcefRad < -Math.PI) lonEcefRad += 2.0 * Math.PI
+        val latDeg = Math.toDegrees(latRad)
+        val lonDeg = Math.toDegrees(lonEcefRad)
+
+        // ── Attitude hold ─────────────────────────────────────────────────────────
+        // Compute target quaternion for the selected hold mode and set it directly.
+        if (holdMode != HoldMode.FREE && holdMode != HoldMode.TARGET && holdMode != HoldMode.SUN) {
+            val vx = velBuffer.get(Basis3D.I); val vy = velBuffer.get(Basis3D.J); val vz = velBuffer.get(Basis3D.K)
+            val vMag = Math.sqrt(vx*vx + vy*vy + vz*vz)
+            if (rMag > 1e-12 && vMag > 1e-12) {
+                val rx = px/rMag; val ry = py/rMag; val rz = pz/rMag   // radial unit
+                val vux = vx/vMag; val vuy = vy/vMag; val vuz = vz/vMag // prograde unit
+                // Orbit normal = cross(r, v) normalised
+                var nx = ry*vuz - rz*vuy; var ny = rz*vux - rx*vuz; var nz = rx*vuy - ry*vux
+                val nMag = Math.sqrt(nx*nx + ny*ny + nz*nz)
+                if (nMag > 1e-12) { nx /= nMag; ny /= nMag; nz /= nMag }
+
+                // Body +X direction in ECI
+                val (bx0, bx1, bx2) = when (holdMode) {
+                    HoldMode.PROGRADE    -> Triple(vux, vuy, vuz)
+                    HoldMode.RETROGRADE  -> Triple(-vux, -vuy, -vuz)
+                    HoldMode.NORMAL      -> Triple(nx, ny, nz)
+                    HoldMode.ANTINORMAL  -> Triple(-nx, -ny, -nz)
+                    HoldMode.RADIAL      -> Triple(rx, ry, rz)
+                    HoldMode.ANTIRADIAL  -> Triple(-rx, -ry, -rz)
+                    else -> Triple(vux, vuy, vuz)
+                }
+                // Reference for body +Y: orbit normal (or radial for normal/antinormal modes)
+                val (refx, refy, refz) = if (holdMode == HoldMode.NORMAL || holdMode == HoldMode.ANTINORMAL)
+                    Triple(rx, ry, rz) else Triple(nx, ny, nz)
+                // Gram-Schmidt body +Y
+                var by0 = bx1*refz - bx2*refy; var by1 = bx2*refx - bx0*refz; var by2 = bx0*refy - bx1*refx
+                val byMag = Math.sqrt(by0*by0 + by1*by1 + by2*by2)
+                if (byMag > 1e-12) {
+                    by0 /= byMag; by1 /= byMag; by2 /= byMag
+                    // body +Z = cross(bx, by)
+                    val bz0 = bx1*by2 - bx2*by1; val bz1 = bx2*by0 - bx0*by2; val bz2 = bx0*by1 - bx1*by0
+                    // Passive rotation matrix rows = body axes in ECI → Shepperd method → quaternion
+                    val trace = bx0 + by1 + bz2
+                    val q = if (trace > 0.0) {
+                        val s = 2.0 * Math.sqrt(trace + 1.0)
+                        doubleArrayOf(s/4.0, (bz1-by2)/s, (bx2-bz0)/s, (by0-bx1)/s)
+                    } else if (bx0 > by1 && bx0 > bz2) {
+                        val s = 2.0 * Math.sqrt(1.0 + bx0 - by1 - bz2)
+                        doubleArrayOf((bz1-by2)/s, s/4.0, (bx1+by0)/s, (bz0+bx2)/s)
+                    } else if (by1 > bz2) {
+                        val s = 2.0 * Math.sqrt(1.0 + by1 - bx0 - bz2)
+                        doubleArrayOf((bx2-bz0)/s, (bx1+by0)/s, s/4.0, (by2+bz1)/s)
+                    } else {
+                        val s = 2.0 * Math.sqrt(1.0 + bz2 - bx0 - by1)
+                        doubleArrayOf((by0-bx1)/s, (bz0+bx2)/s, (by2+bz1)/s, s/4.0)
+                    }
+                    sim.setX(XdX6DQ.Q0, q[0]); sim.setX(XdX6DQ.QI, q[1])
+                    sim.setX(XdX6DQ.QJ, q[2]); sim.setX(XdX6DQ.QK, q[3])
+                    // Re-read attitude buffer to reflect the hold override
+                    sim.getAttitude(t, qBuffer)
+                }
+            }
+        }
+
         _state.value = OrbiterState(
             posX = posBuffer.get(Basis3D.I),
             posY = posBuffer.get(Basis3D.J),
@@ -147,6 +260,8 @@ class OrbiterEngine(
             raanDeg          = Math.toDegrees(outputBuffer.get(KepEuler.O)),
             aopDeg           = Math.toDegrees(outputBuffer.get(KepEuler.W)),
             trueAnomalyDeg   = Math.toDegrees(outputBuffer.get(KepEuler.V)),
+            latDeg           = latDeg,
+            lonDeg           = lonDeg,
             bankDeg          = Math.toDegrees(outputBuffer.get(KepEuler.BANK)),
             elevationDeg     = Math.toDegrees(outputBuffer.get(KepEuler.ELEV)),
             headingDeg       = Math.toDegrees(outputBuffer.get(KepEuler.HEAD)),
