@@ -82,6 +82,26 @@ Replaces the black void with a procedural equirectangular star field.
 
 ---
 
+## Mission Console UI ✅
+Full redesign matching the Orbiter app design handoff (implemented 2026-04-18).
+
+**Done:**
+- **OrbiterEngine**: `HoldMode` enum (FREE/PROGRADE/RETROGRADE/NORMAL/ANTINORMAL/RADIAL/ANTIRADIAL);
+  `latDeg`/`lonDeg` in `OrbiterState` (GAST-corrected); `applyBurn(dvMps)` direct velocity
+  mutation; `jogRCS(dx,dy,dz,mag)` body→ECI Rodrigues rotation; `setAttitudeHold()` with
+  Shepperd-method quaternion override each physics step
+- **OrbiterViewModel**: `ControlUiState` + `SubsystemToggles`; DSN link/latency sin-wave
+  simulation; `arm/fire`, `jogRCS`, `toggleSubsystem`, `resetSim` commands
+- **OrbiterScreen**: 3-column mission-console layout — left (position/attitude/orbital elements),
+  centre (3D SceneView + HUD), right (attitude hold 3×3 grid, ΔV planner with ARM pulse
+  animation, 6DOF RCS pad, subsystems LED matrix, comms panel, status strip)
+- **OrbiterSceneView**: HUD overlays — green LED "ECI FRAME" indicator, `LAT/LON` readout,
+  RGB axis legend, ground-track text; `AxisLegendItem` composable
+- Landscape-locked via `AndroidManifest` `screenOrientation="landscape"`
+- Roboto Mono typography throughout console panels
+
+---
+
 ## Step 6 — Simulation time warp ⬜
 Speed up simulation without changing physics accuracy.
 
