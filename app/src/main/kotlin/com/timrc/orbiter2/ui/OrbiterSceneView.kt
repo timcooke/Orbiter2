@@ -106,17 +106,6 @@ private const val RING_DOT_COUNT = 360
 /** Radius of each ring dot sphere, in Earth radii (50 km / 6371 km ≈ 0.00785 ER). */
 private const val RING_DOT_RADIUS = 0.00785f
 
-// ── Chase camera constants ────────────────────────────────────────────────────
-/**
- * Scales the CameraManipulator's eye-distance (≈ 4.61 ER at default position
- * Float3(0,1,4.5)) down to a comfortable spacecraft-relative orbit radius.
- * Initial chase radius = 4.61 × 0.0867 ≈ 0.4 ER.  Pinch-to-zoom preserves
- * this ratio, so zooming in/out in ECI mode carries through to chase mode.
- */
-private const val CHASE_RADIUS_SCALE = 0.0867f   // 0.4 / sqrt(0²+1²+4.5²)
-private const val CHASE_RADIUS_MIN   = 0.08f      // ~510 km — don't clip inside model
-private const val CHASE_RADIUS_MAX   = 2.0f       // ~12 750 km — don't fly past Earth
-
 // ── Model-to-body-frame alignment ────────────────────────────────────────────
 /**
  * Pre-rotation applied to the Sparky mesh so that the model's visual axes
@@ -499,26 +488,12 @@ fun OrbiterSceneView(
             satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
 
             // ── Chase camera override ─────────────────────────────────────────────
-            // The CameraManipulator has already set cameraNode.worldPosition for this
-            // frame (orbiting the world origin).  We reuse its direction but re-orbit
-            // around the spacecraft instead.  Touch rotation and pinch-to-zoom work
-            // exactly as in ECI mode — the manipulator accumulates gestures normally;
-            // we just redirect its output to be spacecraft-relative.
+            // Camera POSITION is kept in ECI (world) space — the CameraManipulator
+            // manages it exactly as in normal mode (touch to reposition freely).
+            // We only override the ROTATION so the camera always looks at the
+            // spacecraft, wherever it currently is in its orbit.
             if (chaseModeFlag[0]) {
-                val manipPos = cameraNode.worldPosition
-                val manipMag = sqrt(
-                    manipPos.x * manipPos.x +
-                    manipPos.y * manipPos.y +
-                    manipPos.z * manipPos.z
-                )
-                if (manipMag > 1e-6f) {
-                    val dir = manipPos / manipMag
-                    val radius = (manipMag * CHASE_RADIUS_SCALE)
-                        .coerceIn(CHASE_RADIUS_MIN, CHASE_RADIUS_MAX)
-                    val camPos = scenePos + dir * radius
-                    cameraNode.worldPosition = camPos
-                    cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
-                }
+                cameraNode.worldQuaternion = cameraLookAt(cameraNode.worldPosition, scenePos)
             }
 
             // ── Body-axis stub visibility (shown only in CHASE mode) ─────────────
