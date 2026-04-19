@@ -54,11 +54,11 @@ import io.github.sceneview.rememberNode
 import io.github.sceneview.texture.ImageTexture
 
 // ── Orbital ring constants ────────────────────────────────────────────────────
-/** Number of sphere dots placed evenly around the orbital ellipse. */
-private const val RING_DOT_COUNT = 90
+/** Number of sphere dots placed evenly around the orbital ellipse (1° spacing). */
+private const val RING_DOT_COUNT = 360
 
-/** Radius of each ring dot sphere, in Earth radii (~80 km). */
-private const val RING_DOT_RADIUS = 0.0125f
+/** Radius of each ring dot sphere, in Earth radii (50 km / 6371 km ≈ 0.00785 ER). */
+private const val RING_DOT_RADIUS = 0.00785f
 
 // ── Orbital trail constants ───────────────────────────────────────────────────
 /** Maximum positions in the trail ring-buffer (~1 full LEO orbit at default 10 s/step). */
@@ -133,6 +133,7 @@ private fun computeOrbitalRingPositions(
 @Composable
 fun OrbiterSceneView(
     state: OrbiterState,
+    burnEpoch: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -145,8 +146,10 @@ fun OrbiterSceneView(
     // prevSceneY: previous frame's Y coordinate, used to detect ascending-node
     // crossing (sceneY goes from < 0 to ≥ 0).
     // ringReady: false until the ring is drawn at least once (forces first draw).
-    val prevSceneY = remember { floatArrayOf(0f) }
-    val ringReady  = remember { booleanArrayOf(false) }
+    val prevSceneY    = remember { floatArrayOf(0f) }
+    val ringReady     = remember { booleanArrayOf(false) }
+    val lastBurnEpoch = remember { intArrayOf(-1) }
+    val currentBurnEpoch by rememberUpdatedState(burnEpoch)
 
     val engine          = rememberEngine()
     val modelLoader     = rememberModelLoader(engine)
@@ -390,14 +393,15 @@ fun OrbiterSceneView(
                 w =  s.q0.toFloat()
             )
 
-            // ── Orbital ring — redraw at every ascending-node crossing ────────
-            // Ascending node: sceneY (= ECI north-pole component) transitions
-            // from negative (south hemisphere) to non-negative (north hemisphere).
-            // Also draw on the very first frame (ringReady is false).
+            // ── Orbital ring — redraw on first frame, ascending-node, or new burn ──
+            // burnFired: burnEpoch changed since last check → orbit has changed shape
+            val burnFired = currentBurnEpoch != lastBurnEpoch[0]
+            if (burnFired) lastBurnEpoch[0] = currentBurnEpoch
+
             val atAscendingNode = !ringReady[0] ||
                 (prevSceneY[0] < 0f && scenePos.y >= 0f)
             prevSceneY[0] = scenePos.y
-            if (atAscendingNode) {
+            if (atAscendingNode || burnFired) {
                 ringReady[0] = true
                 val positions = computeOrbitalRingPositions(
                     a       = s.semiMajorAxisEr.toFloat(),
