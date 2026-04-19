@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -463,6 +464,12 @@ fun OrbiterSceneView(
                 }
             }
 
+            // ── Body-axis stub visibility (shown only in CHASE mode) ─────────────
+            val chase = chaseModeFlag[0]
+            bodyXNode.isVisible = chase
+            bodyYNode.isVisible = chase
+            bodyZNode.isVisible = chase
+
             // ── Orbital ring — redraw on first frame, ascending-node, or new burn ──
             // burnFired: burnEpoch changed since last check → orbit has changed shape
             val burnFired = currentBurnEpoch != lastBurnEpoch[0]
@@ -588,17 +595,32 @@ fun OrbiterSceneView(
             .align(Alignment.TopEnd)
             .padding(8.dp, 8.dp)
     )
-    // Bottom-left: axis legend
-    Row(
+    // Bottom-left: axis legend — ECI always, body-frame only in CHASE mode.
+    // Colors match the actual CylinderNode material colors.
+    Column(
         modifier = Modifier
             .align(Alignment.BottomStart)
             .padding(8.dp, 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        AxisLegendItem(Color(0xFF4FA3FF), "X-ECI")
-        AxisLegendItem(Color(0xFFFF8A3A), "Y-ECI")
-        AxisLegendItem(Color(0xFFB7E24F), "Z-ECI")
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AxisLegendItem(Color(0xFFFF1A1A), "X-ECI")   // matches Color(1f,0.1f,0.1f)
+            AxisLegendItem(Color(0xFF00FF00), "Y-ECI")   // matches Color(0f,1f,0f)
+            AxisLegendItem(Color(0xFF1A66FF), "Z-ECI")   // matches Color(0.1f,0.4f,1f)
+        }
+        if (isChase) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AxisLegendItem(Color(0xFFFF2626), "X-BODY")  // matches Color(1f,0.15f,0.15f)
+                AxisLegendItem(Color(0xFF26FF26), "Y-BODY")  // matches Color(0.15f,1f,0.15f)
+                AxisLegendItem(Color(0xFF2680FF), "Z-BODY")  // matches Color(0.15f,0.5f,1f)
+            }
+        }
     }
     // Bottom-right: ground track
     Text(
