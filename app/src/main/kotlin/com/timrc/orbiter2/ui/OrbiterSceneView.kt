@@ -125,16 +125,23 @@ private const val CHASE_RADIUS_MAX   = 2.0f       // ~12 750 km — don't fly pa
  *   old model X  →  body Y
  *   old model Y  →  body Z   (up)
  *
- * This is a 120° cyclic rotation about the (1,1,1) diagonal:
- *   q = cos(60°) + sin(60°)·(1,1,1)/√3 = (w=0.5, xyz=0.5,0.5,0.5)
+ * Two-step composition:
+ *  1. 120° about (1,1,1)/√3  → old Z→body X, old Y→body Z, old X→body Y
+ *     q1 = (w=0.5, x=0.5, y=0.5, z=0.5)
+ *  2. 180° about model old-Z (= body X) → flips body Y and body Z
+ *     q2 = (w=0, x=0, y=0, z=1)
+ *  Combined: q = q1 × q2 = (w=−0.5, x=0.5, y=−0.5, z=0.5)
  *
  * Compose as:  satNode.worldQuat = attitudeQuat * MODEL_BODY_OFFSET
  * (offset applied first in model-local space, then world attitude on top).
  *
- * The body-axis stub quaternions must be updated via the inverse permutation
- * (X→Z, Y→X, Z→Y) so they still point along the true simulation body axes.
+ * Body-axis stub quaternions are rederived from the inverse of MODEL_BODY_OFFSET
+ * so each stub still points along the true simulation body axis:
+ *   X stub: +90° about +X  (unchanged)
+ *   Y stub: +90° about +Z  (was −90°)
+ *   Z stub: 180° about +X  (was identity)
  */
-private val MODEL_BODY_OFFSET = Quaternion(x = 0.5f, y = 0.5f, z = 0.5f, w = 0.5f)
+private val MODEL_BODY_OFFSET = Quaternion(x = 0.5f, y = -0.5f, z = 0.5f, w = -0.5f)
 
 // ── Orbital trail constants ───────────────────────────────────────────────────
 /** Maximum positions in the trail ring-buffer (~1 full LEO orbit at default 10 s/step). */
@@ -357,13 +364,13 @@ fun OrbiterSceneView(
         CylinderNode(engine, bodyR, bodyLen, Float3(0f, bodyLen / 2f, 0f), 6,
             materialLoader.createColorInstance(
                 color = Color(0.15f, 1f, 0.15f, 1f), metallic = 0f, roughness = 1f, reflectance = 0f)
-        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(0f, 0f, 1f), -90f) }
+        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(0f, 0f, 1f), 90f) }
     }
     val bodyZNode = rememberNode {
         CylinderNode(engine, bodyR, bodyLen, Float3(0f, bodyLen / 2f, 0f), 6,
             materialLoader.createColorInstance(
                 color = Color(0.15f, 0.5f, 1f, 1f), metallic = 0f, roughness = 1f, reflectance = 0f)
-        )   // identity — +Y already points along body Z after model offset inverse
+        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 180f) }
     }
 
     // Attach body-axis stubs once; rememberNode disposes them automatically —
