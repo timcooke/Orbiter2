@@ -106,6 +106,15 @@ private const val RING_DOT_COUNT = 360
 /** Radius of each ring dot sphere, in Earth radii (50 km / 6371 km ≈ 0.00785 ER). */
 private const val RING_DOT_RADIUS = 0.00785f
 
+// ── Chase camera ─────────────────────────────────────────────────────────────
+/**
+ * Scales the CameraManipulator's ECI eye-position down to a comfortable
+ * spacecraft-viewing distance.  Default manipulator eye ≈ (0, 1, 4.5) ER,
+ * magnitude ≈ 4.61 ER → scaled to ≈ 0.46 ER from the spacecraft.
+ * Pinch-to-zoom changes the manipulator magnitude proportionally.
+ */
+private const val CHASE_ECI_SCALE = 0.1f
+
 // ── Model-to-body-frame alignment ────────────────────────────────────────────
 /**
  * Pre-rotation applied to the Sparky mesh so that the model's visual axes
@@ -488,12 +497,23 @@ fun OrbiterSceneView(
             satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
 
             // ── Chase camera override ─────────────────────────────────────────────
-            // Camera POSITION is kept in ECI (world) space — the CameraManipulator
-            // manages it exactly as in normal mode (touch to reposition freely).
-            // We only override the ROTATION so the camera always looks at the
-            // spacecraft, wherever it currently is in its orbit.
+            // The CameraManipulator maintains its own internal ECI state (orbiting
+            // world origin) and is unaffected by our per-frame override.  We read
+            // its output as a pure ECI-aligned direction+distance vector, scale it
+            // down to a comfortable viewing distance, then use the spacecraft's
+            // current ECI position as the orbit centre.
+            //
+            //   camPos = scenePos  +  manipECI × CHASE_ECI_SCALE
+            //            (spacecraft)   (ECI-aligned offset, ~0.46 ER at default zoom)
+            //
+            // Touch drag  → manipulator changes ECI direction → camera orbits spacecraft
+            // Pinch zoom  → manipulator changes ECI distance  → camera moves closer/farther
+            // Spacecraft translates → scenePos shifts           → camera follows in ECI
+            // Spacecraft rotates   → scenePos unchanged         → camera stays put (not body-frame)
             if (chaseModeFlag[0]) {
-                cameraNode.worldQuaternion = cameraLookAt(cameraNode.worldPosition, scenePos)
+                val camPos = scenePos + cameraNode.worldPosition * CHASE_ECI_SCALE
+                cameraNode.worldPosition = camPos
+                cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
             }
 
             // ── Body-axis stub visibility (shown only in CHASE mode) ─────────────
