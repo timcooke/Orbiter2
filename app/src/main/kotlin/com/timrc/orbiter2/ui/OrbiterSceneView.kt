@@ -1,6 +1,7 @@
 package com.timrc.orbiter2.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -14,8 +15,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,11 +43,13 @@ import kotlin.math.sqrt
 import io.github.sceneview.Scene
 import io.github.sceneview.environment.Environment
 import io.github.sceneview.geometries.Geometry
+import io.github.sceneview.node.CameraNode
 import io.github.sceneview.node.CylinderNode
 import io.github.sceneview.node.GeometryNode
 import io.github.sceneview.node.ModelNode
 import io.github.sceneview.node.SphereNode
 import io.github.sceneview.rememberCameraManipulator
+import io.github.sceneview.rememberCameraNode
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberEnvironment
 import io.github.sceneview.rememberEnvironmentLoader
@@ -52,6 +57,46 @@ import io.github.sceneview.rememberMaterialLoader
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberNode
 import io.github.sceneview.texture.ImageTexture
+
+// ── Camera modes ─────────────────────────────────────────────────────────────
+enum class CameraMode { ECI, CHASE }
+
+/**
+ * Compute a world-space quaternion for a Filament camera at [eye] looking toward [target].
+ *
+ * Filament camera convention: local −Z = forward, +Y = up, +X = right.
+ * The rotation matrix columns are the local axes expressed in world space:
+ *   col 0 = camera_right (+X), col 1 = camera_up (+Y), col 2 = camera_back (+Z = −fwd).
+ * We then convert to quaternion via the Shepperd method.
+ */
+private fun cameraLookAt(eye: Float3, target: Float3): Quaternion {
+    val fwd = normalize(target - eye)
+    // Fallback up when fwd is nearly vertical (avoids degenerate cross-product)
+    val worldUp = if (fwd.y > 0.999f || fwd.y < -0.999f) Float3(0f, 0f, if (fwd.y > 0f) -1f else 1f)
+                  else Float3(0f, 1f, 0f)
+    val back  = -fwd                                       // camera local +Z in world
+    val right = normalize(cross(worldUp, back))            // camera local +X in world  — cross(up, +Z) = +X
+    val up    = cross(back, right)                         // camera local +Y in world
+    // Column-major rotation matrix  (columns = local axes in world)
+    val m00 = right.x; val m01 = up.x; val m02 = back.x
+    val m10 = right.y; val m11 = up.y; val m12 = back.y
+    val m20 = right.z; val m21 = up.z; val m22 = back.z
+    // Shepperd quaternion extraction
+    val trace = m00 + m11 + m22
+    return if (trace > 0f) {
+        val s = 0.5f / sqrt(trace + 1f)
+        Quaternion(w = 0.25f / s, x = (m21 - m12) * s, y = (m02 - m20) * s, z = (m10 - m01) * s)
+    } else if (m00 > m11 && m00 > m22) {
+        val s = 2f * sqrt(1f + m00 - m11 - m22)
+        Quaternion(w = (m21 - m12) / s, x = 0.25f * s,  y = (m01 + m10) / s, z = (m02 + m20) / s)
+    } else if (m11 > m22) {
+        val s = 2f * sqrt(1f + m11 - m00 - m22)
+        Quaternion(w = (m02 - m20) / s, x = (m01 + m10) / s, y = 0.25f * s,  z = (m12 + m21) / s)
+    } else {
+        val s = 2f * sqrt(1f + m22 - m00 - m11)
+        Quaternion(w = (m10 - m01) / s, x = (m02 + m20) / s, y = (m12 + m21) / s, z = 0.25f * s)
+    }
+}
 
 // ── Orbital ring constants ────────────────────────────────────────────────────
 /** Number of sphere dots placed evenly around the orbital ellipse (1° spacing). */
@@ -151,9 +196,17 @@ fun OrbiterSceneView(
     val lastBurnEpoch = remember { intArrayOf(-1) }
     val currentBurnEpoch by rememberUpdatedState(burnEpoch)
 
+    // Camera mode — mutableStateOf drives HUD recomposition; booleanArrayOf is the
+    // stable reference read inside the Filament onFrame lambda (no snapshot needed).
+    var cameraMode     by remember { mutableStateOf(CameraMode.ECI) }
+    val chaseModeFlag  = remember { booleanArrayOf(false) }
+
     val engine          = rememberEngine()
     val modelLoader     = rememberModelLoader(engine)
     val materialLoader  = rememberMaterialLoader(engine)
+    val cameraNode      = rememberCameraNode(engine) {
+        worldPosition = Float3(0f, 1.0f, 4.5f)
+    }
 
     // ── Star-field skybox + uniform ambient IBL ──────────────────────────────
     // We load the star-field HDR for the skybox background, but REPLACE its
@@ -366,6 +419,7 @@ fun OrbiterSceneView(
         modelLoader = modelLoader,
         materialLoader = materialLoader,
         environment = starEnvironment,
+        cameraNode  = cameraNode,
         // trailNode excluded — orbital trail is a feature in work (see IMPROVEMENTS.md).
         // The ribbon geometry, ring-buffer, and frame-counter code is retained below
         // and can be re-enabled by adding trailNode back to this list.
@@ -392,6 +446,22 @@ fun OrbiterSceneView(
                 z = -s.qj.toFloat(),
                 w =  s.q0.toFloat()
             )
+
+            // ── Chase camera override ─────────────────────────────────────────────
+            // Runs after the CameraManipulator has already updated the camera,
+            // so this overrides it completely while in CHASE mode.
+            // Camera is positioned 0.4 ER behind the spacecraft (−velocity direction)
+            // and 0.1 ER above, looking directly at the spacecraft.
+            if (chaseModeFlag[0]) {
+                val velScene = Float3(s.velX.toFloat(), s.velZ.toFloat(), -s.velY.toFloat())
+                val velMag = sqrt(velScene.x * velScene.x + velScene.y * velScene.y + velScene.z * velScene.z)
+                if (velMag > 1e-6f) {
+                    val velDir = velScene / velMag
+                    val camPos = scenePos - velDir * 0.4f + Float3(0f, 0.1f, 0f)
+                    cameraNode.worldPosition = camPos
+                    cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
+                }
+            }
 
             // ── Orbital ring — redraw on first frame, ascending-node, or new burn ──
             // burnFired: burnEpoch changed since last check → orbit has changed shape
@@ -476,11 +546,17 @@ fun OrbiterSceneView(
         } // end onFrame
     ) // end Scene
     // ── HUD overlays ──────────────────────────────────────────────────────────
-    // Top-left: frame indicator with green LED
+    // Top-left: camera mode indicator — tap to toggle ECI ↔ CHASE
+    val isChase = cameraMode == CameraMode.CHASE
     Box(
         modifier = Modifier
             .align(Alignment.TopStart)
             .padding(8.dp, 8.dp)
+            .clickable {
+                val newMode = if (isChase) CameraMode.ECI else CameraMode.CHASE
+                cameraMode = newMode
+                chaseModeFlag[0] = (newMode == CameraMode.CHASE)
+            }
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -490,10 +566,10 @@ fun OrbiterSceneView(
                 modifier = Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF5CD07B))
+                    .background(if (isChase) Color(0xFFE8A947) else Color(0xFF5CD07B))
             )
             Text(
-                "ECI FRAME",
+                if (isChase) "CHASE" else "ECI FRAME",
                 color = Color(0xFFC8D4EA),
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
