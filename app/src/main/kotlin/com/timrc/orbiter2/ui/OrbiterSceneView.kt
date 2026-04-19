@@ -117,6 +117,25 @@ private const val CHASE_RADIUS_SCALE = 0.0867f   // 0.4 / sqrt(0²+1²+4.5²)
 private const val CHASE_RADIUS_MIN   = 0.08f      // ~510 km — don't clip inside model
 private const val CHASE_RADIUS_MAX   = 2.0f       // ~12 750 km — don't fly past Earth
 
+// ── Model-to-body-frame alignment ────────────────────────────────────────────
+/**
+ * Pre-rotation applied to the Sparky mesh so that the model's visual axes
+ * align with the simulation body frame:
+ *   old model Z  →  body X   (nose / forward)
+ *   old model X  →  body Y
+ *   old model Y  →  body Z   (up)
+ *
+ * This is a 120° cyclic rotation about the (1,1,1) diagonal:
+ *   q = cos(60°) + sin(60°)·(1,1,1)/√3 = (w=0.5, xyz=0.5,0.5,0.5)
+ *
+ * Compose as:  satNode.worldQuat = attitudeQuat * MODEL_BODY_OFFSET
+ * (offset applied first in model-local space, then world attitude on top).
+ *
+ * The body-axis stub quaternions must be updated via the inverse permutation
+ * (X→Z, Y→X, Z→Y) so they still point along the true simulation body axes.
+ */
+private val MODEL_BODY_OFFSET = Quaternion(x = 0.5f, y = 0.5f, z = 0.5f, w = 0.5f)
+
 // ── Orbital trail constants ───────────────────────────────────────────────────
 /** Maximum positions in the trail ring-buffer (~1 full LEO orbit at default 10 s/step). */
 private const val TRAIL_MAX = 500
@@ -317,23 +336,34 @@ fun OrbiterSceneView(
     val bodyLen = 0.25f
     val bodyR   = 0.004f
 
+    // Body-axis stub rotations are derived from the inverse of MODEL_BODY_OFFSET
+    // (inverse permutation X→Z, Y→X, Z→Y) so each stub points along the true
+    // simulation body axis even though satNode carries MODEL_BODY_OFFSET.
+    //
+    //  Cylinder default axis = local +Y.  Required mapping (localQuat * +Y = target):
+    //    X stub: +Y → +Z  →  +90° about +X
+    //    Y stub: +Y → +X  →  -90° about +Z
+    //    Z stub: +Y → +Y  →  identity
+    //
+    // Material: fully diffuse (roughness=1, reflectance=0) so rendered colour matches
+    // the legend exactly under any lighting — same as the ECI axis nodes.
     val bodyXNode = rememberNode {
         CylinderNode(engine, bodyR, bodyLen, Float3(0f, bodyLen / 2f, 0f), 6,
             materialLoader.createColorInstance(
-                color = Color(1f, 0.15f, 0.15f, 1f), metallic = 0f, roughness = 0.5f, reflectance = 0.3f)
-        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(0f, 0f, 1f), -90f) }
+                color = Color(1f, 0.15f, 0.15f, 1f), metallic = 0f, roughness = 1f, reflectance = 0f)
+        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f) }
     }
     val bodyYNode = rememberNode {
         CylinderNode(engine, bodyR, bodyLen, Float3(0f, bodyLen / 2f, 0f), 6,
             materialLoader.createColorInstance(
-                color = Color(0.15f, 1f, 0.15f, 1f), metallic = 0f, roughness = 0.5f, reflectance = 0.3f)
-        )
+                color = Color(0.15f, 1f, 0.15f, 1f), metallic = 0f, roughness = 1f, reflectance = 0f)
+        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(0f, 0f, 1f), -90f) }
     }
     val bodyZNode = rememberNode {
         CylinderNode(engine, bodyR, bodyLen, Float3(0f, bodyLen / 2f, 0f), 6,
             materialLoader.createColorInstance(
-                color = Color(0.15f, 0.5f, 1f, 1f), metallic = 0f, roughness = 0.5f, reflectance = 0.3f)
-        ).apply { quaternion = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), 90f) }
+                color = Color(0.15f, 0.5f, 1f, 1f), metallic = 0f, roughness = 1f, reflectance = 0f)
+        )   // identity — +Y already points along body Z after model offset inverse
     }
 
     // Attach body-axis stubs once; rememberNode disposes them automatically —
@@ -450,12 +480,16 @@ fun OrbiterSceneView(
                 z = -s.posY.toFloat()
             )
             satNode.worldPosition = scenePos
-            satNode.worldQuaternion = Quaternion(
+            // Compose: attitudeQuat × MODEL_BODY_OFFSET
+            //   MODEL_BODY_OFFSET rotates the mesh (old Z→body X, old Y→body Z)
+            //   attitudeQuat then applies the spacecraft's inertial attitude on top.
+            val attQuat = Quaternion(
                 x =  s.qi.toFloat(),
                 y =  s.qk.toFloat(),
                 z = -s.qj.toFloat(),
                 w =  s.q0.toFloat()
             )
+            satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
 
             // ── Chase camera override ─────────────────────────────────────────────
             // The CameraManipulator has already set cameraNode.worldPosition for this
