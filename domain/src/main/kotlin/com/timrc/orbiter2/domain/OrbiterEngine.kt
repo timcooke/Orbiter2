@@ -195,57 +195,100 @@ class OrbiterEngine(
 
         // ── Attitude hold ─────────────────────────────────────────────────────────
         // Compute target quaternion for the selected hold mode and set it directly.
-        if (holdMode != HoldMode.FREE && holdMode != HoldMode.TARGET && holdMode != HoldMode.SUN) {
+        // Helper convention: rows of the passive rotation matrix are the body axes
+        // expressed in ECI.  shepperd() converts that 3×3 matrix to a quaternion.
+        // frameBxBz(): body +X primary (exact), body +Z from secondary reference.
+        // frameBzBx(): body +Z primary (exact), body +X from secondary reference.
+        if (holdMode != HoldMode.FREE && holdMode != HoldMode.TARGET) {
             val vx = velBuffer.get(Basis3D.I); val vy = velBuffer.get(Basis3D.J); val vz = velBuffer.get(Basis3D.K)
             val vMag = Math.sqrt(vx*vx + vy*vy + vz*vz)
-            if (rMag > 1e-12 && vMag > 1e-12) {
-                val rx = px/rMag; val ry = py/rMag; val rz = pz/rMag   // radial unit
-                val vux = vx/vMag; val vuy = vy/vMag; val vuz = vz/vMag // prograde unit
-                // Orbit normal = cross(r, v) normalised
-                var nx = ry*vuz - rz*vuy; var ny = rz*vux - rx*vuz; var nz = rx*vuy - ry*vux
-                val nMag = Math.sqrt(nx*nx + ny*ny + nz*nz)
-                if (nMag > 1e-12) { nx /= nMag; ny /= nMag; nz /= nMag }
+            val rx = if (rMag > 1e-12) px/rMag else 0.0   // radial unit  (ECI I,J,K)
+            val ry = if (rMag > 1e-12) py/rMag else 0.0
+            val rz = if (rMag > 1e-12) pz/rMag else 0.0
+            val vux = if (vMag > 1e-12) vx/vMag else 0.0  // prograde unit
+            val vuy = if (vMag > 1e-12) vy/vMag else 0.0
+            val vuz = if (vMag > 1e-12) vz/vMag else 0.0
 
-                // Body +X direction in ECI
-                val (bx0, bx1, bx2) = when (holdMode) {
-                    HoldMode.PROGRADE    -> Triple(vux, vuy, vuz)
-                    HoldMode.RETROGRADE  -> Triple(-vux, -vuy, -vuz)
-                    HoldMode.NORMAL      -> Triple(nx, ny, nz)
-                    HoldMode.ANTINORMAL  -> Triple(-nx, -ny, -nz)
-                    HoldMode.RADIAL      -> Triple(rx, ry, rz)
-                    HoldMode.ANTIRADIAL  -> Triple(-rx, -ry, -rz)
-                    else -> Triple(vux, vuy, vuz)
+            val q: DoubleArray? = when (holdMode) {
+
+                // +Veci — body +X = ECI prograde (primary), body +Z = nadir (secondary)
+                HoldMode.PROGRADE -> if (rMag < 1e-12 || vMag < 1e-12) null else
+                    frameBxBz(vux, vuy, vuz, -rx, -ry, -rz)
+
+                // -Veci — body +X = ECI retrograde (primary), body +Z = nadir (secondary)
+                HoldMode.RETROGRADE -> if (rMag < 1e-12 || vMag < 1e-12) null else
+                    frameBxBz(-vux, -vuy, -vuz, -rx, -ry, -rz)
+
+                // LVLH — body +Z = nadir (primary), body +X = ECEF velocity (secondary)
+                // ECEF velocity in ECI: v_ecef = v_eci − ω×r, ω = [0,0,ωE] (rad/min)
+                // ω×r = (−ωE·py, ωE·px, 0) → v_ecef = (vx+ωE·py, vy−ωE·px, vz)
+                HoldMode.NORMAL -> if (rMag < 1e-12 || vMag < 1e-12) null else {
+                    val omegaE = 4.37527e-3          // Earth rotation rate, rad/min
+                    val vEx = vx + omegaE * py
+                    val vEy = vy - omegaE * px
+                    val vEz = vz
+                    val vEMag = Math.sqrt(vEx*vEx + vEy*vEy + vEz*vEz)
+                    if (vEMag < 1e-12) null else
+                        frameBzBx(-rx, -ry, -rz, vEx/vEMag, vEy/vEMag, vEz/vEMag)
                 }
-                // Reference for body +Y: orbit normal (or radial for normal/antinormal modes)
-                val (refx, refy, refz) = if (holdMode == HoldMode.NORMAL || holdMode == HoldMode.ANTINORMAL)
-                    Triple(rx, ry, rz) else Triple(nx, ny, nz)
-                // Gram-Schmidt body +Y
-                var by0 = bx1*refz - bx2*refy; var by1 = bx2*refx - bx0*refz; var by2 = bx0*refy - bx1*refx
-                val byMag = Math.sqrt(by0*by0 + by1*by1 + by2*by2)
-                if (byMag > 1e-12) {
-                    by0 /= byMag; by1 /= byMag; by2 /= byMag
-                    // body +Z = cross(bx, by)
-                    val bz0 = bx1*by2 - bx2*by1; val bz1 = bx2*by0 - bx0*by2; val bz2 = bx0*by1 - bx1*by0
-                    // Passive rotation matrix rows = body axes in ECI → Shepperd method → quaternion
-                    val trace = bx0 + by1 + bz2
-                    val q = if (trace > 0.0) {
-                        val s = 2.0 * Math.sqrt(trace + 1.0)
-                        doubleArrayOf(s/4.0, (bz1-by2)/s, (bx2-bz0)/s, (by0-bx1)/s)
-                    } else if (bx0 > by1 && bx0 > bz2) {
-                        val s = 2.0 * Math.sqrt(1.0 + bx0 - by1 - bz2)
-                        doubleArrayOf((bz1-by2)/s, s/4.0, (bx1+by0)/s, (bz0+bx2)/s)
-                    } else if (by1 > bz2) {
-                        val s = 2.0 * Math.sqrt(1.0 + by1 - bx0 - bz2)
-                        doubleArrayOf((bx2-bz0)/s, (bx1+by0)/s, s/4.0, (by2+bz1)/s)
-                    } else {
-                        val s = 2.0 * Math.sqrt(1.0 + bz2 - bx0 - by1)
-                        doubleArrayOf((by0-bx1)/s, (bz0+bx2)/s, (by2+bz1)/s, s/4.0)
+
+                // ECI — body axes aligned with ECI axes → identity quaternion
+                HoldMode.ANTINORMAL -> doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+
+                // ECEF — body axes co-rotate with Earth.
+                // Passive ECI→ECEF rotation by thetaGAST about K axis:
+                //   q = ( cos(θ/2), 0, 0, −sin(θ/2) )
+                HoldMode.RADIAL -> {
+                    val half = thetaGAST / 2.0
+                    doubleArrayOf(Math.cos(half), 0.0, 0.0, -Math.sin(half))
+                }
+
+                // -R — keep original behaviour: body +X = anti-radial (primary),
+                // body +Z derived from orbit-normal reference.
+                HoldMode.ANTIRADIAL -> if (rMag < 1e-12 || vMag < 1e-12) null else {
+                    val nx = ry*vuz - rz*vuy; val ny = rz*vux - rx*vuz; val nz = rx*vuy - ry*vux
+                    val nMag = Math.sqrt(nx*nx + ny*ny + nz*nz)
+                    if (nMag < 1e-12) null else {
+                        val nux = nx/nMag; val nuy = ny/nMag; val nuz = nz/nMag
+                        val bx0 = -rx; val bx1 = -ry; val bx2 = -rz
+                        // by = cross(bx, orbit_normal)  →  bz = cross(bx, by)
+                        var by0 = bx1*nuz - bx2*nuy
+                        var by1 = bx2*nux - bx0*nuz
+                        var by2 = bx0*nuy - bx1*nux
+                        val byMag = Math.sqrt(by0*by0 + by1*by1 + by2*by2)
+                        if (byMag < 1e-12) null else {
+                            by0 /= byMag; by1 /= byMag; by2 /= byMag
+                            val bz0 = bx1*by2 - bx2*by1
+                            val bz1 = bx2*by0 - bx0*by2
+                            val bz2 = bx0*by1 - bx1*by0
+                            shepperd(bx0,bx1,bx2, by0,by1,by2, bz0,bz1,bz2)
+                        }
                     }
-                    sim.setX(XdX6DQ.Q0, q[0]); sim.setX(XdX6DQ.QI, q[1])
-                    sim.setX(XdX6DQ.QJ, q[2]); sim.setX(XdX6DQ.QK, q[3])
-                    // Re-read attitude buffer to reflect the hold override
-                    sim.getAttitude(t, qBuffer)
                 }
+
+                // Sun pointing — body −Z toward Sun (primary), body +X toward ECI prograde (secondary).
+                // Low-fidelity solar direction: circular Earth orbit, J2000 epoch reference.
+                //   λ_sun = 280.46° + 0.9856°/day × t_min  (solar ecliptic longitude)
+                //   obliquity ε = 23.4393°
+                //   sun_ECI = (cos λ, cos ε · sin λ, sin ε · sin λ)   [unit vector, Earth→Sun]
+                HoldMode.SUN -> if (vMag < 1e-12) null else {
+                    val sunLon = Math.toRadians(280.46 + 0.0006844 * t)   // 0.9856/1440 deg/min
+                    val eps    = Math.toRadians(23.4393)
+                    val sI = Math.cos(sunLon)
+                    val sJ = Math.cos(eps) * Math.sin(sunLon)
+                    val sK = Math.sin(eps) * Math.sin(sunLon)
+                    // body +Z = −sunHat  (so body −Z faces the Sun)
+                    frameBzBx(-sI, -sJ, -sK, vux, vuy, vuz)
+                }
+
+                else -> null
+            }
+
+            if (q != null) {
+                sim.setX(XdX6DQ.Q0, q[0]); sim.setX(XdX6DQ.QI, q[1])
+                sim.setX(XdX6DQ.QJ, q[2]); sim.setX(XdX6DQ.QK, q[3])
+                // Re-read attitude buffer to reflect the hold override
+                sim.getAttitude(t, qBuffer)
             }
         }
 
@@ -310,4 +353,95 @@ class EarthModel : ICentralBody {
     override fun getR(elevation: Double, azimuth: Double) = gravity.getR(elevation, azimuth)
     override fun getPosition(tReq: Double, tout: Tuple3D): Double { tout.set(0.0, 0.0, 0.0); return tReq }
     override fun getAttitude(tReq: Double, qout: Quaternion): Double { qout.identity(); return tReq }
+}
+
+// ── Attitude hold helpers ────────────────────────────────────────────────────────
+// These are file-private (package-private in Kotlin terms) so they can live outside
+// the OrbiterEngine class but still be co-located for easy maintenance.
+
+/**
+ * Convert a rotation matrix (given row-by-row, where each row is a body axis
+ * expressed in the inertial frame) to a passive inertial-to-body quaternion
+ * via Shepperd's method.
+ *
+ * Matrix layout:
+ *   Row 0  =  body +X direction in inertial frame  (m00, m01, m02)
+ *   Row 1  =  body +Y direction in inertial frame  (m10, m11, m12)
+ *   Row 2  =  body +Z direction in inertial frame  (m20, m21, m22)
+ *
+ * Returns  doubleArrayOf(q0, qi, qj, qk).
+ */
+private fun shepperd(
+    m00: Double, m01: Double, m02: Double,
+    m10: Double, m11: Double, m12: Double,
+    m20: Double, m21: Double, m22: Double
+): DoubleArray {
+    val tr = m00 + m11 + m22
+    return if (tr > 0.0) {
+        val s = 2.0 * Math.sqrt(tr + 1.0)
+        doubleArrayOf(s/4.0, (m21-m12)/s, (m02-m20)/s, (m10-m01)/s)
+    } else if (m00 > m11 && m00 > m22) {
+        val s = 2.0 * Math.sqrt(1.0 + m00 - m11 - m22)
+        doubleArrayOf((m21-m12)/s, s/4.0, (m01+m10)/s, (m20+m02)/s)
+    } else if (m11 > m22) {
+        val s = 2.0 * Math.sqrt(1.0 + m11 - m00 - m22)
+        doubleArrayOf((m02-m20)/s, (m01+m10)/s, s/4.0, (m12+m21)/s)
+    } else {
+        val s = 2.0 * Math.sqrt(1.0 + m22 - m00 - m11)
+        doubleArrayOf((m10-m01)/s, (m20+m02)/s, (m12+m21)/s, s/4.0)
+    }
+}
+
+/**
+ * Build a right-handed orthonormal body frame with body +X as the **primary** axis
+ * (held exactly) and body +Z derived from a secondary reference direction via
+ * Gram-Schmidt, then delegate to [shepperd].
+ *
+ * Construction:
+ *   bY = normalize( cross(bzRef, bX) )
+ *   bZ = cross(bX, bY)                    ← close to bzRef
+ *
+ * Returns null if the two input vectors are nearly parallel (degenerate frame).
+ */
+private fun frameBxBz(
+    bx0: Double, bx1: Double, bx2: Double,        // primary: body +X  (unit vector)
+    bzRef0: Double, bzRef1: Double, bzRef2: Double // secondary: approx body +Z (unit vector)
+): DoubleArray? {
+    var by0 = bzRef1*bx2 - bzRef2*bx1
+    var by1 = bzRef2*bx0 - bzRef0*bx2
+    var by2 = bzRef0*bx1 - bzRef1*bx0
+    val byMag = Math.sqrt(by0*by0 + by1*by1 + by2*by2)
+    if (byMag < 1e-12) return null
+    by0 /= byMag; by1 /= byMag; by2 /= byMag
+    val bz0 = bx1*by2 - bx2*by1
+    val bz1 = bx2*by0 - bx0*by2
+    val bz2 = bx0*by1 - bx1*by0
+    return shepperd(bx0,bx1,bx2, by0,by1,by2, bz0,bz1,bz2)
+}
+
+/**
+ * Build a right-handed orthonormal body frame with body +Z as the **primary** axis
+ * (held exactly) and body +X derived from a secondary reference direction via
+ * Gram-Schmidt, then delegate to [shepperd].
+ *
+ * Construction:
+ *   bY = normalize( cross(bZ, bxRef) )
+ *   bX = cross(bY, bZ)                    ← close to bxRef
+ *
+ * Returns null if the two input vectors are nearly parallel (degenerate frame).
+ */
+private fun frameBzBx(
+    bz0: Double, bz1: Double, bz2: Double,        // primary: body +Z  (unit vector)
+    bxRef0: Double, bxRef1: Double, bxRef2: Double // secondary: approx body +X (unit vector)
+): DoubleArray? {
+    var by0 = bz1*bxRef2 - bz2*bxRef1
+    var by1 = bz2*bxRef0 - bz0*bxRef2
+    var by2 = bz0*bxRef1 - bz1*bxRef0
+    val byMag = Math.sqrt(by0*by0 + by1*by1 + by2*by2)
+    if (byMag < 1e-12) return null
+    by0 /= byMag; by1 /= byMag; by2 /= byMag
+    val bx0 = by1*bz2 - by2*bz1
+    val bx1 = by2*bz0 - by0*bz2
+    val bx2 = by0*bz1 - by1*bz0
+    return shepperd(bx0,bx1,bx2, by0,by1,by2, bz0,bz1,bz2)
 }
