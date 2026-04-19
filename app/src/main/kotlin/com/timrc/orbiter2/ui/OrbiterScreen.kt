@@ -110,9 +110,8 @@ fun OrbiterScreen(vm: OrbiterViewModel = viewModel()) {
                     .width(180.dp)
             )
             OrbiterSceneView(
-                state      = state,
-                burnEpoch  = ctrl.burnEpoch,
-                modifier   = Modifier
+                state    = state,
+                modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
             )

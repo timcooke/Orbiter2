@@ -33,8 +33,7 @@ data class ControlUiState(
     val rcsMag: Float = 0.25f,
     val toggles: SubsystemToggles = SubsystemToggles(),
     val link: Float = 38.2f,
-    val latency: Float = 1.12f,
-    val burnEpoch: Int = 0          // incremented on every fired burn
+    val latency: Float = 1.12f
 )
 
 class OrbiterViewModel : ViewModel() {
@@ -83,9 +82,8 @@ class OrbiterViewModel : ViewModel() {
         engine.applyBurn(c.dvMps.toDouble())
         val propUsed = (c.dvMps * 0.02f).coerceAtMost(c.prop)
         _ctrl.value = c.copy(
-            armed      = false,
-            prop       = (c.prop - propUsed).coerceAtLeast(0f),
-            burnEpoch  = c.burnEpoch + 1
+            armed = false,
+            prop  = (c.prop - propUsed).coerceAtLeast(0f)
         )
     }
 

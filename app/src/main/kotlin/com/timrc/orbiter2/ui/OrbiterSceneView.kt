@@ -179,7 +179,6 @@ private fun computeOrbitalRingPositions(
 @Composable
 fun OrbiterSceneView(
     state: OrbiterState,
-    burnEpoch: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -195,7 +194,6 @@ fun OrbiterSceneView(
     val prevSceneY    = remember { floatArrayOf(0f) }
     val ringReady     = remember { booleanArrayOf(false) }
     val lastBurnEpoch = remember { intArrayOf(-1) }
-    val currentBurnEpoch by rememberUpdatedState(burnEpoch)
 
     // Camera mode — mutableStateOf drives HUD recomposition; booleanArrayOf is the
     // stable reference read inside the Filament onFrame lambda (no snapshot needed).
@@ -471,9 +469,11 @@ fun OrbiterSceneView(
             bodyZNode.isVisible = chase
 
             // ── Orbital ring — redraw on first frame, ascending-node, or new burn ──
-            // burnFired: burnEpoch changed since last check → orbit has changed shape
-            val burnFired = currentBurnEpoch != lastBurnEpoch[0]
-            if (burnFired) lastBurnEpoch[0] = currentBurnEpoch
+            // burnFired: state.burnEpoch changed since last check.
+            // Because burnEpoch is embedded in OrbiterState by publishState(), the ring
+            // always redraws with the correct post-burn orbital elements (never stale).
+            val burnFired = s.burnEpoch != lastBurnEpoch[0]
+            if (burnFired) lastBurnEpoch[0] = s.burnEpoch
 
             val atAscendingNode = !ringReady[0] ||
                 (prevSceneY[0] < 0f && scenePos.y >= 0f)

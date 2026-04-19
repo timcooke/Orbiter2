@@ -57,6 +57,9 @@ data class OrbiterState(
     val bankDeg: Double = 0.0,
     val elevationDeg: Double = 0.0,
     val headingDeg: Double = 0.0,
+    // Incremented every time applyBurn() is called; used to trigger immediate
+    // ring redraws in the UI with the correct post-burn orbital elements.
+    val burnEpoch: Int = 0,
 ) {
     /** Position magnitude in ER. */
     val posMagEr: Double get() = Math.sqrt(posX*posX + posY*posY + posZ*posZ)
@@ -84,6 +87,7 @@ class OrbiterEngine(
     private val sim = OrbiterSys()
 
     @Volatile private var holdMode: HoldMode = HoldMode.FREE
+    @Volatile private var burnEpoch: Int = 0
 
     private val _state = MutableStateFlow(OrbiterState())
     val state: StateFlow<OrbiterState> = _state.asStateFlow()
@@ -131,6 +135,9 @@ class OrbiterEngine(
         sim.setX(XdX6DQ.DX, vx + vx * scale)
         sim.setX(XdX6DQ.DY, vy + vy * scale)
         sim.setX(XdX6DQ.DZ, vz + vz * scale)
+        // Increment here; publishState() will embed this in the next OrbiterState,
+        // guaranteeing the ring redraw sees the correct post-burn orbital elements.
+        burnEpoch++
     }
 
     /** Apply a small RCS translational impulse. [dx],[dy],[dz] are ±1 body-frame directions; [magMps] in m/s. */
@@ -265,6 +272,7 @@ class OrbiterEngine(
             bankDeg          = Math.toDegrees(outputBuffer.get(KepEuler.BANK)),
             elevationDeg     = Math.toDegrees(outputBuffer.get(KepEuler.ELEV)),
             headingDeg       = Math.toDegrees(outputBuffer.get(KepEuler.HEAD)),
+            burnEpoch        = this.burnEpoch,
         )
     }
 }
