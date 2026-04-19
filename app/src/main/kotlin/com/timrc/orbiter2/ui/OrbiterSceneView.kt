@@ -108,12 +108,12 @@ private const val RING_DOT_RADIUS = 0.00785f
 
 // ── Chase camera ─────────────────────────────────────────────────────────────
 /**
- * Scales the CameraManipulator's ECI eye-position down to a comfortable
+ * Scales the CameraManipulator's eye-position down to a comfortable
  * spacecraft-viewing distance.  Default manipulator eye ≈ (0, 1, 4.5) ER,
  * magnitude ≈ 4.61 ER → scaled to ≈ 0.46 ER from the spacecraft.
  * Pinch-to-zoom changes the manipulator magnitude proportionally.
  */
-private const val CHASE_ECI_SCALE = 0.1f
+private const val CHASE_ECEF_SCALE = 0.1f
 
 // ── Model-to-body-frame alignment ────────────────────────────────────────────
 /**
@@ -496,22 +496,40 @@ fun OrbiterSceneView(
             )
             satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
 
-            // ── Chase camera override ─────────────────────────────────────────────
+            // ── Chase camera override (ECEF frame) ───────────────────────────────
             // The CameraManipulator maintains its own internal ECI state (orbiting
-            // world origin) and is unaffected by our per-frame override.  We read
-            // its output as a pure ECI-aligned direction+distance vector, scale it
-            // down to a comfortable viewing distance, then use the spacecraft's
-            // current ECI position as the orbit centre.
+            // world origin) and is unaffected by our per-frame override.  We treat
+            // its eye-position as an ECEF offset (rotating with Earth) by applying
+            // Earth's rotation angle thetaGAST about scene Y before adding scenePos.
             //
-            //   camPos = scenePos  +  manipECI × CHASE_ECI_SCALE
-            //            (spacecraft)   (ECI-aligned offset, ~0.46 ER at default zoom)
+            //   camPos = scenePos  +  R_y(thetaGAST) × (manipECI × CHASE_ECEF_SCALE)
             //
-            // Touch drag  → manipulator changes ECI direction → camera orbits spacecraft
-            // Pinch zoom  → manipulator changes ECI distance  → camera moves closer/farther
-            // Spacecraft translates → scenePos shifts           → camera follows in ECI
-            // Spacecraft rotates   → scenePos unchanged         → camera stays put (not body-frame)
+            // Touch drag  → manipulator changes direction → camera orbits in ECEF
+            // Pinch zoom  → manipulator changes distance  → camera moves closer/farther
+            // Spacecraft translates → scenePos shifts    → camera follows
+            // Earth rotates → thetaGAST grows            → camera rotates with Earth
             if (chaseModeFlag[0]) {
-                val camPos = scenePos + cameraNode.worldPosition * CHASE_ECI_SCALE
+                // The CameraManipulator's internal state is ECI-aligned (orbiting world
+                // origin).  We interpret its eye position as an ECEF-frame offset by
+                // rotating it by -thetaGAST about scene Y (the north-pole axis).
+                //
+                //   ECEF → ECI rotation by angle θ about scene Y (= ECI Z = north pole):
+                //     x' =  x·cosθ + z·sinθ
+                //     y' =  y  (pole axis unchanged)
+                //     z' = -x·sinθ + z·cosθ
+                //
+                // thetaGAST accumulates at Earth's rotation rate:
+                //   ωE = 4.37527e-3 rad/min → θ = ωE × s.time  (s.time is in minutes)
+                val manipScaled = cameraNode.worldPosition * CHASE_ECEF_SCALE
+                val thetaRad = (4.37527e-3 * s.time).toFloat()
+                val cosT = cos(thetaRad)
+                val sinT = sin(thetaRad)
+                val eciOffset = Float3(
+                    x = manipScaled.x * cosT + manipScaled.z * sinT,
+                    y = manipScaled.y,
+                    z = -manipScaled.x * sinT + manipScaled.z * cosT
+                )
+                val camPos = scenePos + eciOffset
                 cameraNode.worldPosition = camPos
                 cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
             }
