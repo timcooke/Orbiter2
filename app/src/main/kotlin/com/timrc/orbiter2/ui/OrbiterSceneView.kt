@@ -106,6 +106,17 @@ private const val RING_DOT_COUNT = 360
 /** Radius of each ring dot sphere, in Earth radii (50 km / 6371 km ≈ 0.00785 ER). */
 private const val RING_DOT_RADIUS = 0.00785f
 
+// ── Chase camera constants ────────────────────────────────────────────────────
+/**
+ * Scales the CameraManipulator's eye-distance (≈ 4.61 ER at default position
+ * Float3(0,1,4.5)) down to a comfortable spacecraft-relative orbit radius.
+ * Initial chase radius = 4.61 × 0.0867 ≈ 0.4 ER.  Pinch-to-zoom preserves
+ * this ratio, so zooming in/out in ECI mode carries through to chase mode.
+ */
+private const val CHASE_RADIUS_SCALE = 0.0867f   // 0.4 / sqrt(0²+1²+4.5²)
+private const val CHASE_RADIUS_MIN   = 0.08f      // ~510 km — don't clip inside model
+private const val CHASE_RADIUS_MAX   = 2.0f       // ~12 750 km — don't fly past Earth
+
 // ── Orbital trail constants ───────────────────────────────────────────────────
 /** Maximum positions in the trail ring-buffer (~1 full LEO orbit at default 10 s/step). */
 private const val TRAIL_MAX = 500
@@ -447,16 +458,23 @@ fun OrbiterSceneView(
             )
 
             // ── Chase camera override ─────────────────────────────────────────────
-            // Runs after the CameraManipulator has already updated the camera,
-            // so this overrides it completely while in CHASE mode.
-            // Camera is positioned 0.4 ER behind the spacecraft (−velocity direction)
-            // and 0.1 ER above, looking directly at the spacecraft.
+            // The CameraManipulator has already set cameraNode.worldPosition for this
+            // frame (orbiting the world origin).  We reuse its direction but re-orbit
+            // around the spacecraft instead.  Touch rotation and pinch-to-zoom work
+            // exactly as in ECI mode — the manipulator accumulates gestures normally;
+            // we just redirect its output to be spacecraft-relative.
             if (chaseModeFlag[0]) {
-                val velScene = Float3(s.velX.toFloat(), s.velZ.toFloat(), -s.velY.toFloat())
-                val velMag = sqrt(velScene.x * velScene.x + velScene.y * velScene.y + velScene.z * velScene.z)
-                if (velMag > 1e-6f) {
-                    val velDir = velScene / velMag
-                    val camPos = scenePos - velDir * 0.4f + Float3(0f, 0.1f, 0f)
+                val manipPos = cameraNode.worldPosition
+                val manipMag = sqrt(
+                    manipPos.x * manipPos.x +
+                    manipPos.y * manipPos.y +
+                    manipPos.z * manipPos.z
+                )
+                if (manipMag > 1e-6f) {
+                    val dir = manipPos / manipMag
+                    val radius = (manipMag * CHASE_RADIUS_SCALE)
+                        .coerceIn(CHASE_RADIUS_MIN, CHASE_RADIUS_MAX)
+                    val camPos = scenePos + dir * radius
                     cameraNode.worldPosition = camPos
                     cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
                 }
