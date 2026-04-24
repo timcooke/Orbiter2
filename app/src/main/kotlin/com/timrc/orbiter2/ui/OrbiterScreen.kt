@@ -259,12 +259,12 @@ private fun AttitudeHoldPanel(ctrl: ControlUiState, vm: OrbiterViewModel) {
     ConsolePanel(title = "ATTITUDE HOLD", subtitle = ctrl.holdMode.name) {
         // 3×3 hold mode button grid
         val modes = listOf(
-            HoldMode.PROGRADE    to "+Veci",  // body +X = ECI prograde,    +Z = nadir
-            HoldMode.RETROGRADE  to "-Veci",  // body +X = ECI retrograde,  +Z = nadir
-            HoldMode.NORMAL      to "LVLH",   // body +Z = nadir (primary), +X = ECEF velocity
-            HoldMode.ANTINORMAL  to "ECI",    // body axes = ECI axes (identity)
-            HoldMode.RADIAL      to "ECEF",   // body axes co-rotate with Earth
-            HoldMode.ANTIRADIAL  to "-R",     // body +X = anti-radial (unchanged)
+            HoldMode.PLUS_VECI   to "+Veci",  // body +X = ECI prograde,    +Z = nadir
+            HoldMode.MINUS_VECI  to "-Veci",  // body +X = ECI retrograde,  +Z = nadir
+            HoldMode.LVLH        to "LVLH",   // body +Z = nadir (primary), +X = ECEF velocity
+            HoldMode.ECI         to "ECI",    // body axes = ECI axes (identity)
+            HoldMode.ECEF        to "ECEF",   // body axes co-rotate with Earth
+            HoldMode.MINUS_R     to "-R",     // body +X = anti-radial (unchanged)
             HoldMode.TARGET      to "\u2192T",
             HoldMode.SUN         to "\u2609", // body -Z toward Sun, +X = ECI prograde
             HoldMode.FREE        to "\u2014"

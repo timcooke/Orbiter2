@@ -24,7 +24,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class HoldMode {
-    FREE, PROGRADE, RETROGRADE, NORMAL, ANTINORMAL, RADIAL, ANTIRADIAL, TARGET, SUN
+    FREE, PLUS_VECI, MINUS_VECI, LVLH, ECI, ECEF, MINUS_R, TARGET, SUN
 }
 
 /** All-double snapshot for zero-allocation Compose equality checks. */
@@ -212,17 +212,17 @@ class OrbiterEngine(
             val q: DoubleArray? = when (holdMode) {
 
                 // +Veci — body +X = ECI prograde (primary), body +Z = nadir (secondary)
-                HoldMode.PROGRADE -> if (rMag < 1e-12 || vMag < 1e-12) null else
+                HoldMode.PLUS_VECI -> if (rMag < 1e-12 || vMag < 1e-12) null else
                     frameBxBz(vux, vuy, vuz, -rx, -ry, -rz)
 
                 // -Veci — body +X = ECI retrograde (primary), body +Z = nadir (secondary)
-                HoldMode.RETROGRADE -> if (rMag < 1e-12 || vMag < 1e-12) null else
+                HoldMode.MINUS_VECI -> if (rMag < 1e-12 || vMag < 1e-12) null else
                     frameBxBz(-vux, -vuy, -vuz, -rx, -ry, -rz)
 
                 // LVLH — body +Z = nadir (primary), body +X = ECEF velocity (secondary)
                 // ECEF velocity in ECI: v_ecef = v_eci − ω×r, ω = [0,0,ωE] (rad/min)
                 // ω×r = (−ωE·py, ωE·px, 0) → v_ecef = (vx+ωE·py, vy−ωE·px, vz)
-                HoldMode.NORMAL -> if (rMag < 1e-12 || vMag < 1e-12) null else {
+                HoldMode.LVLH -> if (rMag < 1e-12 || vMag < 1e-12) null else {
                     val omegaE = 4.37527e-3          // Earth rotation rate, rad/min
                     val vEx = vx + omegaE * py
                     val vEy = vy - omegaE * px
@@ -233,19 +233,19 @@ class OrbiterEngine(
                 }
 
                 // ECI — body axes aligned with ECI axes → identity quaternion
-                HoldMode.ANTINORMAL -> doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+                HoldMode.ECI -> doubleArrayOf(1.0, 0.0, 0.0, 0.0)
 
                 // ECEF — body axes co-rotate with Earth.
                 // Passive ECI→ECEF rotation by thetaGAST about K axis:
                 //   q = ( cos(θ/2), 0, 0, −sin(θ/2) )
-                HoldMode.RADIAL -> {
+                HoldMode.ECEF -> {
                     val half = thetaGAST / 2.0
                     doubleArrayOf(Math.cos(half), 0.0, 0.0, -Math.sin(half))
                 }
 
                 // -R — keep original behaviour: body +X = anti-radial (primary),
                 // body +Z derived from orbit-normal reference.
-                HoldMode.ANTIRADIAL -> if (rMag < 1e-12 || vMag < 1e-12) null else {
+                HoldMode.MINUS_R -> if (rMag < 1e-12 || vMag < 1e-12) null else {
                     val nx = ry*vuz - rz*vuy; val ny = rz*vux - rx*vuz; val nz = rx*vuy - ry*vux
                     val nMag = Math.sqrt(nx*nx + ny*ny + nz*nz)
                     if (nMag < 1e-12) null else {

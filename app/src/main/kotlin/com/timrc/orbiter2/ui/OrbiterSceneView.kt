@@ -488,10 +488,14 @@ fun OrbiterSceneView(
             // Compose: attitudeQuat × MODEL_BODY_OFFSET
             //   MODEL_BODY_OFFSET rotates the mesh (old Z→body X, old Y→body Z)
             //   attitudeQuat then applies the spacecraft's inertial attitude on top.
+            // Note: OrbiterState provides a PASSIVE (inertial-to-body) quaternion.
+            // Filament requires an ACTIVE (body-to-inertial) quaternion. We must conjugate 
+            // the passive quaternion by negating its vector components (qi, qj, qk).
+            // Then we map the ECI axes to Filament axes (X -> X, Y -> Z, Z -> -Y).
             val attQuat = Quaternion(
-                x =  s.qi.toFloat(),
-                y =  s.qk.toFloat(),
-                z = -s.qj.toFloat(),
+                x = -s.qi.toFloat(),
+                y = -s.qk.toFloat(),
+                z =  s.qj.toFloat(), // -(-s.qj)
                 w =  s.q0.toFloat()
             )
             satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
