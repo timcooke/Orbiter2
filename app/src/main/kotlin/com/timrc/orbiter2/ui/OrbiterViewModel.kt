@@ -22,7 +22,7 @@ data class SubsystemToggles(
 )
 
 data class ControlUiState(
-    val holdMode: HoldMode = HoldMode.FREE,
+    val holdMode: HoldMode = HoldMode.PLUS_VECI,
     val refBank: Float = 0f,
     val refElev: Float = 0f,
     val refHead: Float = 0f,
@@ -47,6 +47,7 @@ class OrbiterViewModel : ViewModel() {
 
     init {
         engine.start(viewModelScope)
+        engine.setAttitudeHold(HoldMode.PLUS_VECI)
         // Simulate DSN link quality and latency fluctuation
         viewModelScope.launch {
             while (true) {

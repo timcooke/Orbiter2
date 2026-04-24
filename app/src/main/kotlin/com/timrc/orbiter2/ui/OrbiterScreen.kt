@@ -113,12 +113,7 @@ fun OrbiterScreen(vm: OrbiterViewModel = viewModel()) {
                 state    = state,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight(),
-                onCameraModeChanged = { mode ->
-                    if (mode == CameraMode.CHASE) {
-                        vm.setHoldMode(com.timrc.orbiter2.domain.HoldMode.PLUS_VECI)
-                    }
-                }
+                    .fillMaxHeight()
             )
             RightColumn(
                 ctrl = ctrl,

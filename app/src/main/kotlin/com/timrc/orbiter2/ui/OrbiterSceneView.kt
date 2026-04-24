@@ -219,8 +219,7 @@ private fun computeOrbitalRingPositions(
 @Composable
 fun OrbiterSceneView(
     state: OrbiterState,
-    modifier: Modifier = Modifier,
-    onCameraModeChanged: (CameraMode) -> Unit = {}
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val currentState by rememberUpdatedState(state)
@@ -662,7 +661,6 @@ fun OrbiterSceneView(
                 val newMode = if (isChase) CameraMode.ECI else CameraMode.CHASE
                 cameraMode = newMode
                 chaseModeFlag[0] = (newMode == CameraMode.CHASE)
-                onCameraModeChanged(newMode)
             }
     ) {
         Row(
