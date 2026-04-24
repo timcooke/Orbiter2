@@ -37,6 +37,7 @@ import dev.romainguy.kotlin.math.Float4
 import dev.romainguy.kotlin.math.Quaternion
 import dev.romainguy.kotlin.math.cross
 import dev.romainguy.kotlin.math.normalize
+import kotlin.math.abs
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -70,11 +71,15 @@ enum class CameraMode { ECI, CHASE }
  *   col 0 = camera_right (+X), col 1 = camera_up (+Y), col 2 = camera_back (+Z = −fwd).
  * We then convert to quaternion via the Shepperd method.
  */
-private fun cameraLookAt(eye: Float3, target: Float3): Quaternion {
+private fun cameraLookAt(eye: Float3, target: Float3, upRef: Float3 = Float3(0f, 1f, 0f)): Quaternion {
     val fwd = normalize(target - eye)
-    // Fallback up when fwd is nearly vertical (avoids degenerate cross-product)
-    val worldUp = if (fwd.y > 0.999f || fwd.y < -0.999f) Float3(0f, 0f, if (fwd.y > 0f) -1f else 1f)
-                  else Float3(0f, 1f, 0f)
+    val dot = fwd.x * upRef.x + fwd.y * upRef.y + fwd.z * upRef.z
+    // Fallback up when fwd is nearly parallel to upRef (avoids degenerate cross-product)
+    val worldUp = if (dot > 0.999f || dot < -0.999f) {
+        if (abs(fwd.x) < 0.5f) Float3(1f, 0f, 0f) else Float3(0f, 1f, 0f)
+    } else {
+        upRef
+    }
     val back  = -fwd                                       // camera local +Z in world
     val right = normalize(cross(worldUp, back))            // camera local +X in world  — cross(up, +Z) = +X
     val up    = cross(back, right)                         // camera local +Y in world
@@ -472,8 +477,8 @@ fun OrbiterSceneView(
             listOf(earthNode, satNode, eciXNode, eciYNode, eciZNode) + ringDotNodes
         },
         cameraManipulator = rememberCameraManipulator(
-            Float3(0f, 1.0f, 4.5f),
-            Float3(0f, 0f, 0f)
+            orbitHomePosition = Float3(-4.5f, 0f, 1.0f),
+            targetPosition = Float3(0f, 0f, 0f)
         ),
         onFrame = { _ ->
             val s = currentState
@@ -502,42 +507,60 @@ fun OrbiterSceneView(
             // 3. qT rotates from ECI space to Scene World space.
             satNode.worldQuaternion = qT * qActEci * MODEL_BODY_OFFSET
 
-            // ── Chase camera override (ECEF frame) ───────────────────────────────
-            // The CameraManipulator maintains its own internal ECI state (orbiting
-            // world origin) and is unaffected by our per-frame override.  We treat
-            // its eye-position as an ECEF offset (rotating with Earth) by applying
-            // Earth's rotation angle thetaGAST about scene Y before adding scenePos.
-            //
-            //   camPos = scenePos  +  R_y(thetaGAST) × (manipECI × CHASE_ECEF_SCALE)
-            //
-            // Touch drag  → manipulator changes direction → camera orbits in ECEF
-            // Pinch zoom  → manipulator changes distance  → camera moves closer/farther
-            // Spacecraft translates → scenePos shifts    → camera follows
-            // Earth rotates → thetaGAST grows            → camera rotates with Earth
+            // ── Chase camera override (LVLH frame) ───────────────────────────────
+            // The CameraManipulator provides a panned offset `manipScaled` orbiting the origin.
+            // We interpret `manipScaled` in a local LVLH-aligned frame to eliminate gimbal lock.
+            // By mapping the manipulator's poles (Y-axis) to the sides (Left/Right) of the spacecraft,
+            // we allow free unhindered panning from behind, over the top, in front, and underneath!
+            //   Manipulator +X = Forward  (-behindScene)
+            //   Manipulator +Y = Left     (leftScene)
+            //   Manipulator +Z = Zenith   (upScene)
+            // The default manipulator eye is (-4.5, 0.0, 1.0), which perfectly maps to:
+            // 4.5 units Behind, 0 units Left, and 1.0 unit Zenith (Above).
             if (chaseModeFlag[0]) {
-                // The CameraManipulator's internal state is ECI-aligned (orbiting world
-                // origin).  We interpret its eye position as an ECEF-frame offset by
-                // rotating it by -thetaGAST about scene Y (the north-pole axis).
-                //
-                //   ECEF → ECI rotation by angle θ about scene Y (= ECI Z = north pole):
-                //     x' =  x·cosθ + z·sinθ
-                //     y' =  y  (pole axis unchanged)
-                //     z' = -x·sinθ + z·cosθ
-                //
-                // thetaGAST accumulates at Earth's rotation rate:
-                //   ωE = 4.37527e-3 rad/min → θ = ωE × s.time  (s.time is in minutes)
                 val manipScaled = cameraNode.worldPosition * CHASE_ECEF_SCALE
-                val thetaRad = (4.37527e-3 * s.time).toFloat()
-                val cosT = cos(thetaRad)
-                val sinT = sin(thetaRad)
-                val eciOffset = Float3(
-                    x = manipScaled.x * cosT + manipScaled.z * sinT,
-                    y = manipScaled.y,
-                    z = -manipScaled.x * sinT + manipScaled.z * cosT
+
+                val px = s.posX.toFloat()
+                val py = s.posY.toFloat()
+                val pz = s.posZ.toFloat()
+                val rMag = sqrt(px*px + py*py + pz*pz)
+                val rx = if (rMag > 1e-6f) px/rMag else 0f
+                val ry = if (rMag > 1e-6f) py/rMag else 0f
+                val rz = if (rMag > 1e-6f) pz/rMag else 0f
+
+                val vx = s.velX.toFloat()
+                val vy = s.velY.toFloat()
+                val vz = s.velZ.toFloat()
+                val vMag = sqrt(vx*vx + vy*vy + vz*vz)
+                val vux = if (vMag > 1e-6f) vx/vMag else 0f
+                val vuy = if (vMag > 1e-6f) vy/vMag else 0f
+                val vuz = if (vMag > 1e-6f) vz/vMag else 0f
+
+                // Left = Up x Forward = R x V
+                val hx = ry*vuz - rz*vuy
+                val hy = rz*vux - rx*vuz
+                val hz = rx*vuy - ry*vux
+                val hMag = sqrt(hx*hx + hy*hy + hz*hz)
+                val leftX = if (hMag > 1e-6f) hx/hMag else 0f
+                val leftY = if (hMag > 1e-6f) hy/hMag else 0f
+                val leftZ = if (hMag > 1e-6f) hz/hMag else 0f
+
+                // Map these ECI vectors to Scene vectors: X=X, Y=Z, Z=-Y
+                val upScene = Float3(rx, rz, -ry)
+                val leftScene = Float3(leftX, leftZ, -leftY)
+                val behindScene = Float3(-vux, -vuz, vuy)
+                val forwardScene = Float3(vux, vuz, -vuy) // Manipulator X maps here
+
+                // Apply right-handed rotated mapping to move gimbal lock to the left/right sides
+                val sceneOffset = Float3(
+                    x = manipScaled.x * forwardScene.x + manipScaled.y * leftScene.x + manipScaled.z * upScene.x,
+                    y = manipScaled.x * forwardScene.y + manipScaled.y * leftScene.y + manipScaled.z * upScene.y,
+                    z = manipScaled.x * forwardScene.z + manipScaled.y * leftScene.z + manipScaled.z * upScene.z
                 )
-                val camPos = scenePos + eciOffset
+
+                val camPos = scenePos + sceneOffset
                 cameraNode.worldPosition = camPos
-                cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos)
+                cameraNode.worldQuaternion = cameraLookAt(camPos, scenePos, upScene)
             }
 
             // ── Body-axis stub visibility (shown only in CHASE mode) ─────────────
