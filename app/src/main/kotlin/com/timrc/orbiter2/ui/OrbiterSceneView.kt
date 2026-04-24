@@ -477,7 +477,7 @@ fun OrbiterSceneView(
             listOf(earthNode, satNode, eciXNode, eciYNode, eciZNode) + ringDotNodes
         },
         cameraManipulator = rememberCameraManipulator(
-            orbitHomePosition = Float3(-4.5f, 0f, 1.0f),
+            orbitHomePosition = Float3(0f, 4.0f, 2.0f),
             targetPosition = Float3(0f, 0f, 0f)
         ),
         onFrame = { _ ->
@@ -509,14 +509,12 @@ fun OrbiterSceneView(
 
             // ── Chase camera override (LVLH frame) ───────────────────────────────
             // The CameraManipulator provides a panned offset `manipScaled` orbiting the origin.
-            // We interpret `manipScaled` in a local LVLH-aligned frame to eliminate gimbal lock.
-            // By mapping the manipulator's poles (Y-axis) to the sides (Left/Right) of the spacecraft,
-            // we allow free unhindered panning from behind, over the top, in front, and underneath!
-            //   Manipulator +X = Forward  (-behindScene)
-            //   Manipulator +Y = Left     (leftScene)
-            //   Manipulator +Z = Zenith   (upScene)
-            // The default manipulator eye is (-4.5, 0.0, 1.0), which perfectly maps to:
-            // 4.5 units Behind, 0 units Left, and 1.0 unit Zenith (Above).
+            // We interpret `manipScaled` in a local LVLH-aligned frame.
+            //   Manipulator +X = Left     (leftScene)
+            //   Manipulator +Y = Zenith   (upScene)
+            //   Manipulator +Z = Behind   (behindScene)
+            // The default manipulator eye is (0.0, 4.0, 2.0), which perfectly maps to:
+            // 4.0 units Zenith (Above) and 2.0 units Behind.
             if (chaseModeFlag[0]) {
                 val manipScaled = cameraNode.worldPosition * CHASE_ECEF_SCALE
 
@@ -549,13 +547,12 @@ fun OrbiterSceneView(
                 val upScene = Float3(rx, rz, -ry)
                 val leftScene = Float3(leftX, leftZ, -leftY)
                 val behindScene = Float3(-vux, -vuz, vuy)
-                val forwardScene = Float3(vux, vuz, -vuy) // Manipulator X maps here
 
-                // Apply right-handed rotated mapping to move gimbal lock to the left/right sides
+                // Apply standard mapping to maintain intuitive touch controls
                 val sceneOffset = Float3(
-                    x = manipScaled.x * forwardScene.x + manipScaled.y * leftScene.x + manipScaled.z * upScene.x,
-                    y = manipScaled.x * forwardScene.y + manipScaled.y * leftScene.y + manipScaled.z * upScene.y,
-                    z = manipScaled.x * forwardScene.z + manipScaled.y * leftScene.z + manipScaled.z * upScene.z
+                    x = manipScaled.x * leftScene.x + manipScaled.y * upScene.x + manipScaled.z * behindScene.x,
+                    y = manipScaled.x * leftScene.y + manipScaled.y * upScene.y + manipScaled.z * behindScene.y,
+                    z = manipScaled.x * leftScene.z + manipScaled.y * upScene.z + manipScaled.z * behindScene.z
                 )
 
                 val camPos = scenePos + sceneOffset
