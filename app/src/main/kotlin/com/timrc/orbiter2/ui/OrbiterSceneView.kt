@@ -485,20 +485,22 @@ fun OrbiterSceneView(
                 z = -s.posY.toFloat()
             )
             satNode.worldPosition = scenePos
-            // Compose: attitudeQuat × MODEL_BODY_OFFSET
-            //   MODEL_BODY_OFFSET rotates the mesh (old Z→body X, old Y→body Z)
-            //   attitudeQuat then applies the spacecraft's inertial attitude on top.
-            // Note: OrbiterState provides a PASSIVE (inertial-to-body) quaternion.
-            // Filament requires an ACTIVE (body-to-inertial) quaternion. We must conjugate 
-            // the passive quaternion by negating its vector components (qi, qj, qk).
-            // Then we map the ECI axes to Filament axes (X -> X, Y -> Z, Z -> -Y).
-            val attQuat = Quaternion(
+            // Convert passive inertial-to-body quaternion to active body-to-inertial.
+            val qActEci = Quaternion(
+                w =  s.q0.toFloat(),
                 x = -s.qi.toFloat(),
-                y = -s.qk.toFloat(),
-                z =  s.qj.toFloat(), // -(-s.qj)
-                w =  s.q0.toFloat()
+                y = -s.qj.toFloat(),
+                z = -s.qk.toFloat()
             )
-            satNode.worldQuaternion = attQuat * MODEL_BODY_OFFSET
+            // qT represents the transformation from ECI coordinates to Scene coordinates
+            // (a -90 degree rotation around the X axis).
+            val qT = Quaternion.fromAxisAngle(Float3(1f, 0f, 0f), -90f)
+            
+            // Compose the final world quaternion:
+            // 1. MODEL_BODY_OFFSET rotates from Mesh Local space to Body space.
+            // 2. qActEci rotates from Body space to ECI space.
+            // 3. qT rotates from ECI space to Scene World space.
+            satNode.worldQuaternion = qT * qActEci * MODEL_BODY_OFFSET
 
             // ── Chase camera override (ECEF frame) ───────────────────────────────
             // The CameraManipulator maintains its own internal ECI state (orbiting
